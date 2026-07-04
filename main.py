@@ -28,9 +28,11 @@ TASK_PROCESSOR_SLEEP = 1
 ERROR_RETRY_SLEEP = 5
 RECONNECT_INTERVAL = 180
 CONNECTION_TIMEOUT = 10
+STATUS_REFRESH_AFTER_ADD_DELAY = 1
 
 # 网络和存储常量
 BYTES_TO_KB = 1024
+KIB_PER_MIB = 1024
 BYTES_TO_GB = 1024 ** 3
 BYTES_TO_TB = 1024 ** 4
 MAX_RECONNECT_ATTEMPTS = 1
@@ -45,7 +47,7 @@ SUPPORTED_SORT_KEYS = {
     'active_downloads': '活跃下载数'
 }
 DEFAULT_PRIMARY_SORT_KEY = 'upload_speed'
-UPLOAD_SPEED_SORT_ZERO_THRESHOLD_KIB = 200.0
+UPLOAD_SPEED_SORT_ZERO_THRESHOLD_KIB = 500.0
 
 # 创建一个简单的logger，避免在初始化之前输出日志
 logger = logging.getLogger(__name__)
@@ -121,6 +123,13 @@ def _create_rotating_handler(filename, level, formatter):
     return handler
 
 
+def _format_speed_rate(speed_kib_per_second: float) -> str:
+    """格式化 KiB/s 速率，达到 1 MiB/s 时显示为 MiB/s。"""
+    if speed_kib_per_second >= KIB_PER_MIB:
+        return f"{speed_kib_per_second / KIB_PER_MIB:.1f}MB/s"
+    return f"{speed_kib_per_second:.1f}KB/s"
+
+
 @dataclass
 class InstanceInfo:
     """qBittorrent实例信息"""
@@ -162,6 +171,7 @@ class QBittorrentLoadBalancer:
         self.pending_torrents: List[PendingTorrent] = []
         self.pending_torrents_lock = threading.Lock()
         self.instances_lock = threading.Lock()
+        self.status_refresh_event = threading.Event()
         self.announce_retry_counts = {} # 用于跟踪每个种子的汇报重试次数
         
         # 重新配置日志（支持文件输出）
@@ -489,8 +499,8 @@ class QBittorrentLoadBalancer:
             self._check_instance_traffic(instance)
         
         logger.debug(f"实例 {instance.name}：" 
-                   f"上传={instance.upload_speed:.1f}KB/s，"
-                   f"下载={instance.download_speed:.1f}KB/s，"
+                   f"上传={_format_speed_rate(instance.upload_speed)}，"
+                   f"下载={_format_speed_rate(instance.download_speed)}，"
                    f"活跃下载={instance.active_downloads}，"
                    f"空间={instance.free_space/BYTES_TO_GB:.1f}/{instance.reserved_space/BYTES_TO_GB:.1f}GB，"
                    f"更新={instance.success_metrics_count}，"
@@ -820,10 +830,12 @@ class QBittorrentLoadBalancer:
             if result and result.startswith('Ok'):
                 instance.new_tasks_count += 1
                 instance.total_added_tasks_count += 1  # 增加累计任务计数
+                instance.active_downloads += 1  # 乐观更新，避免下一次分配读到过期下载数
                 log_msg = f"成功添加种子到实例 {instance.name}：{torrent.release_name}"
                 if torrent.category:
                     log_msg += f"（分类：{torrent.category}）"
                 logger.info(log_msg)
+                self._request_status_refresh()
                 return True
             else:
                 logger.error(f"添加种子失败 - 实例：{instance.name}，种子：{torrent.release_name}，结果：{result}")
@@ -855,6 +867,17 @@ class QBittorrentLoadBalancer:
         with self.instances_lock:
             for instance in self.instances:
                 instance.new_tasks_count = 0
+
+    def _request_status_refresh(self) -> None:
+        """请求状态更新线程尽快刷新所有实例状态。"""
+        self.status_refresh_event.set()
+
+    def _wait_for_next_status_refresh(self, timeout: float) -> None:
+        """等待下一次定时刷新，或被任务添加事件提前唤醒。"""
+        if self.status_refresh_event.wait(timeout):
+            self.status_refresh_event.clear()
+            time.sleep(STATUS_REFRESH_AFTER_ADD_DELAY)
+            logger.debug("收到立即刷新请求，延迟1秒后执行状态刷新")
                 
     def _log_status_summary(self) -> None:
         """记录状态摘要信息"""
@@ -883,9 +906,9 @@ class QBittorrentLoadBalancer:
                 # 根据是否有待重试的汇报任务来调整检查频率
                 fast_interval = self.config['fast_announce_interval']
                 if self.announce_retry_counts:
-                    time.sleep(fast_interval)  # 有待重试任务时的快速检查频率
+                    self._wait_for_next_status_refresh(fast_interval)  # 有待重试任务时的快速检查频率
                 else:
-                    time.sleep(fast_interval * 2)  # 正常情况下的检查频率
+                    self._wait_for_next_status_refresh(fast_interval * 2)  # 正常情况下的检查频率
                 
             except Exception as e:
                 logger.error(f"状态更新线程错误：{e}")
