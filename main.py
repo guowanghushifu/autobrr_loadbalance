@@ -45,11 +45,14 @@ WAITING_DOWNLOAD_STATES = {'stalledDL', 'queuedDL', 'metaDL'}
 SUPPORTED_SORT_KEYS = {
     'upload_speed': '上传速度',
     'download_speed': '下载速度',
+    'upload_download_speed': '上传速度+下载速度',
     'active_downloads': '活跃下载数',
     'total_downloads': '全部下载数'
 }
 DEFAULT_PRIMARY_SORT_KEY = 'upload_speed'
 UPLOAD_SPEED_SORT_ZERO_THRESHOLD_KIB = 500.0
+UPLOAD_DOWNLOAD_SORT_UPLOAD_WEIGHT = 0.6
+UPLOAD_DOWNLOAD_SORT_DOWNLOAD_WEIGHT = 0.4
 
 # 创建一个简单的logger，避免在初始化之前输出日志
 logger = logging.getLogger(__name__)
@@ -771,6 +774,11 @@ class QBittorrentLoadBalancer:
             return self._get_upload_speed_sort_value(instance)
         elif primary_sort_key == 'download_speed':
             return instance.download_speed
+        elif primary_sort_key == 'upload_download_speed':
+            return (
+                self._get_upload_speed_sort_value(instance) * UPLOAD_DOWNLOAD_SORT_UPLOAD_WEIGHT
+                + instance.download_speed * UPLOAD_DOWNLOAD_SORT_DOWNLOAD_WEIGHT
+            )
         elif primary_sort_key == 'active_downloads':
             return float(instance.active_downloads)
         elif primary_sort_key == 'total_downloads':

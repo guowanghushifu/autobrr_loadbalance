@@ -72,7 +72,7 @@ python run.py
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `webhook_port` | `5000` | Webhook 监听端口 |
-| `primary_sort_key` | `upload_speed` | 负载均衡策略：`upload_speed`/`download_speed`/`active_downloads`/`total_downloads` |
+| `primary_sort_key` | `upload_speed` | 负载均衡策略：`upload_speed`/`download_speed`/`upload_download_speed`/`active_downloads`/`total_downloads` |
 | `max_new_tasks_per_instance` | `2` | 单实例单轮最大新任务数 |
 | `max_announce_retries` | `30` | 种子最大汇报重试次数 |
 | `fast_announce_interval` | `3` | 快速检查间隔（2-10秒），正常检查为2倍该值 |
@@ -82,6 +82,8 @@ python run.py
 | `fast_announce_category_blacklist` | `[]` | 快速汇报分类黑名单，指定分类的种子不触发快速汇报 |
 
 `total_downloads` 的计算方式为：活跃下载数 + 0.5 × 等待下载数。等待下载数指 qBittorrent 中已添加但还未开始传输数据的下载任务，例如 `stalledDL`、`queuedDL`、`metaDL` 状态。
+
+`upload_download_speed` 的计算方式为：上传速率 × 0.6 + 下载速率 × 0.4。默认系数可在 `main.py` 顶部修改：`UPLOAD_DOWNLOAD_SORT_UPLOAD_WEIGHT` 和 `UPLOAD_DOWNLOAD_SORT_DOWNLOAD_WEIGHT`。
 
 ⚠️ 警告：fast_announce_enabled打开可能会导致你的账号被站点警告、封禁等后果，如果你打开，责任自负
 
