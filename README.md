@@ -70,7 +70,7 @@ python run.py
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `webhook_port` | `5000` | Webhook 监听端口 |
+| `webhook_port` | `50000` | Webhook 监听端口 |
 | `primary_sort_key` | `upload_speed` | 负载均衡策略：`upload_speed`/`download_speed`/`upload_download_speed`/`active_downloads`/`total_downloads` |
 | `max_new_tasks_per_instance` | `2` | 单实例单轮最大新任务数 |
 | `connection_timeout` | `6` | 连接超时时间（秒）|

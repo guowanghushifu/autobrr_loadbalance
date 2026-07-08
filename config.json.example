@@ -19,7 +19,7 @@
             "reserved_space": 21504
         }
     ],
-    "webhook_port": 5000,
+    "webhook_port": 50000,
     "webhook_path": "/webhook/secure-a8f9c2e1-4b3d-9876-abcd-ef0123456789",
     "max_new_tasks_per_instance": 2,
     "reconnect_interval": 120,
