@@ -28,7 +28,9 @@
         "password": "change-this-password",
         "event_limit": 100,
         "history_points": 120,
-        "log_limit": 1000
+        "log_limit": 1000,
+        "timezone": "Asia/Shanghai",
+        "timezone_configured": false
     },
     "telegram": {
         "enabled": false,

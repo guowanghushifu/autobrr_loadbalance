@@ -1,7 +1,7 @@
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 
-let snapshot = { configured_instances: [], instances: [], whitelist: [], events: [], telegram: {}, metrics_history: [], tracker_stats: [], traffic_totals: {} };
+let snapshot = { configured_instances: [], instances: [], whitelist: [], events: [], telegram: {}, metrics_history: [], tracker_stats: [], traffic_totals: {}, dashboard_timezone: { name: 'Asia/Shanghai', configured: false } };
 let toastTimer;
 let telegramDirty = false;
 let draggedColumn = null;
@@ -10,6 +10,7 @@ let logRecords = [];
 let logCursor = 0;
 let logRequestActive = false;
 let sortState = { key: 'name', direction: 'asc' };
+let trackerSortState = { key: 'torrent_count', direction: 'desc' };
 
 const viewTitles = { overview: '概览', instances: '实例', traffic: '流量分析', webhook: 'Webhook', telegram: 'Telegram', events: '事件', logs: '日志' };
 const sortKeyNames = { upload_speed: '上传速度', download_speed: '下载速度', upload_download_speed: '上传与下载速度', active_downloads: '活跃下载数', total_downloads: '全部下载数' };
@@ -36,6 +37,17 @@ function speed(kib) {
 
 function traffic(bytes) {
   return `${(Number(bytes || 0) / 1_000_000_000_000).toFixed(3)} TB`;
+}
+
+function dashboardTimezone() { return snapshot.dashboard_timezone?.name || 'Asia/Shanghai'; }
+function timezoneDisplayName(name) { return name === 'Asia/Shanghai' ? 'UTC+8 北京时间' : name; }
+function formatDateTime(value) {
+  try { return new Date(value).toLocaleString('zh-CN', { timeZone: dashboardTimezone() }); }
+  catch (_) { return new Date(value).toLocaleString('zh-CN'); }
+}
+function formatTime(value) {
+  try { return new Date(value).toLocaleTimeString('zh-CN', { timeZone: dashboardTimezone(), hour: '2-digit', minute: '2-digit' }); }
+  catch (_) { return new Date(value).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }); }
 }
 
 function showView(name, updateHash = true) {
@@ -87,11 +99,14 @@ const instanceColumns = {
       box.append(value, edit); return box;
     },
   },
-  upload: { label: '上传', value: (row) => Number(row.state.upload_speed_kib || 0), render: (row) => metric(speed(row.state.upload_speed_kib)) },
-  download: { label: '下载', value: (row) => Number(row.state.download_speed_kib || 0), render: (row) => metric(speed(row.state.download_speed_kib)) },
+  upload: { label: '上传速度', value: (row) => Number(row.state.upload_speed_kib || 0), render: (row) => metric(speed(row.state.upload_speed_kib)) },
+  download: { label: '下载速度', value: (row) => Number(row.state.download_speed_kib || 0), render: (row) => metric(speed(row.state.download_speed_kib)) },
+  uploaded: { label: '上传量', value: (row) => Number(row.state.total_uploaded_bytes || 0), render: (row) => metric(`今日 ${traffic(row.state.today_uploaded_bytes)}`, `累计 ${traffic(row.state.total_uploaded_bytes)}`) },
+  downloaded: { label: '下载量', value: (row) => Number(row.state.total_downloaded_bytes || 0), render: (row) => metric(`今日 ${traffic(row.state.today_downloaded_bytes)}`, `累计 ${traffic(row.state.total_downloaded_bytes)}`) },
+  total_traffic: { label: '总流量', value: (row) => Number(row.state.total_traffic_bytes || 0), render: (row) => metric(`今日 ${traffic(row.state.today_traffic_bytes)}`, `累计 ${traffic(row.state.total_traffic_bytes)}`) },
   tasks: { label: '下载任务', value: (row) => Number(row.state.active_downloads || 0) + Number(row.state.waiting_downloads || 0), render: (row) => metric(`${row.state.active_downloads || 0} 活跃`, `${row.state.waiting_downloads || 0} 等待`) },
   space: { label: '剩余空间', value: (row) => Number(row.state.free_space_gib || 0), render: (row) => metric(`${row.state.free_space_gib || 0} GiB`, `保留 ${row.state.reserved_space_gib || 0} GiB`) },
-  traffic: { label: '流量', value: (row) => Number(row.state.traffic_out_gib || 0), render: (row) => row.state.traffic_limit_gib ? `${row.state.traffic_out_gib} / ${row.state.traffic_limit_gib} GiB` : '未限制' },
+  traffic: { label: 'VPS 流量限制', value: (row) => Number(row.state.traffic_out_gib || 0), render: (row) => row.state.traffic_limit_gib ? `${row.state.traffic_out_gib} / ${row.state.traffic_limit_gib} GiB` : '未限制' },
   added: { label: '累计添加', value: (row) => Number(row.state.total_added_tasks || 0), render: (row) => String(row.state.total_added_tasks || 0) },
   actions: {
     label: '操作', sortable: false,
@@ -213,7 +228,7 @@ function eventNode(event) {
   const status = document.createElement('span'); status.className = `event-status ${event.status}`; status.textContent = statusNames[event.status] || event.status;
   const detail = document.createElement('div'); detail.className = 'event-detail'; detail.textContent = event.release_name;
   const small = document.createElement('small'); small.textContent = [event.detail, event.source_ip].filter(Boolean).join(' · '); detail.append(small);
-  const time = document.createElement('time'); time.textContent = new Date(event.timestamp).toLocaleString(); item.append(status, detail, time); return item;
+  const time = document.createElement('time'); time.textContent = formatDateTime(event.timestamp); item.append(status, detail, time); return item;
 }
 
 function renderEvents() {
@@ -231,7 +246,10 @@ function renderSummary() {
   $('#chart-upload-now').textContent = speed(upload); $('#chart-download-now').textContent = speed(download);
   $('#traffic-upload-total').textContent = traffic(snapshot.traffic_totals?.uploaded_bytes);
   $('#traffic-download-total').textContent = traffic(snapshot.traffic_totals?.downloaded_bytes);
-  $('#updated-at').textContent = new Date(snapshot.updated_at).toLocaleString(); $('#sort-key').textContent = `分配策略 · ${sortKeyNames[snapshot.sort_key] || snapshot.sort_key}`;
+  $('#traffic-upload-today').textContent = traffic(snapshot.traffic_totals?.today_uploaded_bytes);
+  $('#traffic-download-today').textContent = traffic(snapshot.traffic_totals?.today_downloaded_bytes);
+  $('#updated-at').textContent = formatDateTime(snapshot.updated_at); $('#sort-key').textContent = `分配策略 · ${sortKeyNames[snapshot.sort_key] || snapshot.sort_key}`;
+  $('#timezone-button').textContent = `时区 · ${timezoneDisplayName(dashboardTimezone())}`;
 }
 
 function renderTelegram() {
@@ -243,6 +261,28 @@ function renderTelegram() {
   }
   $('#telegram-state').textContent = telegramDirty ? `待保存：${$('#telegram-enabled').checked ? '启用' : '停用'}` : (telegram.enabled ? `已启用 · ${telegram.chat_id}` : (telegram.bot_token_configured ? '已配置，当前停用' : '尚未配置 Token'));
   $('#telegram-token').placeholder = telegram.bot_token_configured ? '已保存；留空则保持当前 Token' : '请输入 BotFather 提供的 Token';
+}
+
+function populateTimezoneOptions(selected) {
+  const select = $('#timezone-select');
+  if (!select.options.length) {
+    const fallback = ['Asia/Shanghai', 'UTC', 'Asia/Tokyo', 'Asia/Singapore', 'Europe/London', 'Europe/Berlin', 'America/New_York', 'America/Los_Angeles', 'Australia/Sydney'];
+    const supported = typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : fallback;
+    const browserTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const zones = [...new Set(['Asia/Shanghai', browserTimezone, ...supported].filter(Boolean))];
+    zones.forEach((zone) => { const option = document.createElement('option'); option.value = zone; option.textContent = timezoneDisplayName(zone); select.append(option); });
+  }
+  if (![...select.options].some((option) => option.value === selected)) { const option = document.createElement('option'); option.value = selected; option.textContent = timezoneDisplayName(selected); select.append(option); }
+  select.value = selected;
+}
+
+function openTimezoneDialog(required = false) {
+  const dialog = $('#timezone-dialog'); populateTimezoneOptions(dashboardTimezone()); dialog.dataset.required = required ? 'true' : 'false'; $('#timezone-cancel').hidden = required; $('#timezone-error').textContent = '';
+  if (!dialog.open) dialog.showModal();
+}
+
+function renderTimezone() {
+  if (!snapshot.dashboard_timezone?.configured) openTimezoneDialog(true);
 }
 
 function drawLineChart(canvas, key, color) {
@@ -257,14 +297,43 @@ function drawLineChart(canvas, key, color) {
   if (points.length) {
     context.strokeStyle = color; context.lineWidth = 2; context.lineJoin = 'round'; context.lineCap = 'round'; context.beginPath();
     values.forEach((value, index) => { const x = padding.left + (points.length === 1 ? plotWidth : plotWidth * index / (points.length - 1)); const y = padding.top + plotHeight - (value / maximum * plotHeight); if (index === 0) context.moveTo(x, y); else context.lineTo(x, y); }); context.stroke();
-    context.fillStyle = '#637178'; context.textBaseline = 'top'; context.textAlign = 'left'; context.fillText(new Date(points[0].timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), padding.left, height - 24); context.textAlign = 'right'; context.fillText(new Date(points[points.length - 1].timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), width - padding.right, height - 24);
+    context.fillStyle = '#637178'; context.textBaseline = 'top'; context.textAlign = 'left'; context.fillText(formatTime(points[0].timestamp), padding.left, height - 24); context.textAlign = 'right'; context.fillText(formatTime(points[points.length - 1].timestamp), width - padding.right, height - 24);
   } else { context.fillStyle = '#637178'; context.textAlign = 'center'; context.fillText('等待采集数据', padding.left + plotWidth / 2, padding.top + plotHeight / 2); }
 }
 
+const trackerColumns = {
+  tracker: { label: 'Tracker', value: (row) => row.tracker, render: (row) => row.tracker },
+  instances: { label: '实例', value: (row) => (row.instances || []).join(', '), render: (row) => (row.instances || []).join(', ') },
+  instance_counts: { label: '实例种子数', value: (row) => (row.instance_torrent_counts || []).map((item) => `${item.name}:${item.torrent_count}`).join('|'), render: (row) => (row.instance_torrent_counts || []).map((item) => `${item.name}：${item.torrent_count}`).join(' · ') },
+  torrent_count: { label: '种子数', value: (row) => Number(row.torrent_count || 0), render: (row) => String(row.torrent_count || 0) },
+  active_downloads: { label: '活跃下载', value: (row) => Number(row.active_downloads || 0), render: (row) => String(row.active_downloads || 0) },
+  upload_speed: { label: '上传速度', value: (row) => Number(row.upload_speed_kib || 0), render: (row) => speed(row.upload_speed_kib) },
+  download_speed: { label: '下载速度', value: (row) => Number(row.download_speed_kib || 0), render: (row) => speed(row.download_speed_kib) },
+  today_uploaded: { label: '今日上传', value: (row) => Number(row.today_uploaded_bytes || 0), render: (row) => traffic(row.today_uploaded_bytes) },
+  today_downloaded: { label: '今日下载', value: (row) => Number(row.today_downloaded_bytes || 0), render: (row) => traffic(row.today_downloaded_bytes) },
+  uploaded: { label: '累计上传', value: (row) => Number(row.uploaded_bytes || 0), render: (row) => traffic(row.uploaded_bytes) },
+  downloaded: { label: '累计下载', value: (row) => Number(row.downloaded_bytes || 0), render: (row) => traffic(row.downloaded_bytes) },
+};
+const trackerColumnKeys = Object.keys(trackerColumns);
+
+function renderTrackerHeader() {
+  const head = $('#tracker-head'); head.replaceChildren();
+  trackerColumnKeys.forEach((key) => {
+    const column = trackerColumns[key]; const th = document.createElement('th'); const button = document.createElement('button');
+    button.className = 'sort-button'; button.type = 'button'; button.title = `按${column.label}排序`; button.textContent = column.label;
+    if (trackerSortState.key === key) { const indicator = document.createElement('img'); indicator.className = 'sort-indicator'; indicator.src = `/static/icons/arrow-${trackerSortState.direction === 'asc' ? 'up' : 'down'}.svg`; indicator.alt = trackerSortState.direction === 'asc' ? '升序' : '降序'; button.append(indicator); }
+    button.addEventListener('click', () => { trackerSortState = { key, direction: trackerSortState.key === key && trackerSortState.direction === 'asc' ? 'desc' : 'asc' }; renderTrackerStats(); });
+    th.append(button); head.append(th);
+  });
+}
+
 function renderTrackerStats() {
-  const body = $('#tracker-body'); body.replaceChildren(); const trackers = snapshot.tracker_stats || []; $('#tracker-count').textContent = `${trackers.length} TRACKERS`;
-  if (!trackers.length) { const row = document.createElement('tr'); cell(row, '暂无 tracker 数据', 'empty').colSpan = 8; body.append(row); return; }
-  trackers.forEach((tracker) => { const row = document.createElement('tr'); cell(row, tracker.tracker); cell(row, tracker.instances.join(', ')); cell(row, String(tracker.torrent_count)); cell(row, String(tracker.active_downloads)); cell(row, speed(tracker.upload_speed_kib)); cell(row, speed(tracker.download_speed_kib)); cell(row, traffic(tracker.uploaded_bytes)); cell(row, traffic(tracker.downloaded_bytes)); body.append(row); });
+  renderTrackerHeader();
+  const body = $('#tracker-body'); body.replaceChildren(); const trackers = [...(snapshot.tracker_stats || [])]; $('#tracker-count').textContent = `${trackers.length} TRACKERS`;
+  if (!trackers.length) { const row = document.createElement('tr'); cell(row, '暂无 tracker 数据', 'empty').colSpan = trackerColumnKeys.length; body.append(row); return; }
+  const column = trackerColumns[trackerSortState.key];
+  trackers.sort((left, right) => { const a = column.value(left); const b = column.value(right); const result = typeof a === 'string' ? a.localeCompare(b, 'zh-CN') : a - b; return trackerSortState.direction === 'asc' ? result : -result; });
+  trackers.forEach((tracker) => { const row = document.createElement('tr'); trackerColumnKeys.forEach((key) => cell(row, trackerColumns[key].render(tracker))); body.append(row); });
 }
 
 function renderTraffic() { drawLineChart($('#upload-chart'), 'upload_speed_kib', '#087f5b'); drawLineChart($('#download-chart'), 'download_speed_kib', '#087e8b'); renderTrackerStats(); }
@@ -272,7 +341,7 @@ function renderTraffic() { drawLineChart($('#upload-chart'), 'upload_speed_kib',
 async function refresh() {
   try {
     snapshot = await api('/api/dashboard/status');
-    renderSummary(); renderOverviewInstances(); if (!quickEditingName) renderInstances(); renderWhitelist(); renderTelegram(); renderEvents(); renderTrackerStats();
+    renderSummary(); renderOverviewInstances(); if (!quickEditingName) renderInstances(); renderWhitelist(); renderTelegram(); renderTimezone(); renderEvents(); renderTrackerStats();
     if ($('[data-view-panel="traffic"]').classList.contains('active')) requestAnimationFrame(renderTraffic);
     $('#connection-state').classList.remove('offline');
   } catch (error) { $('#connection-state').classList.add('offline'); notify(error.message); }
@@ -315,7 +384,7 @@ function renderLogs() {
   stream.classList.toggle('indent-lines', $('#log-indent').checked); stream.classList.toggle('flat-lines', !$('#log-indent').checked); stream.classList.toggle('no-wrap', $('#log-nowrap').checked);
   let records = logRecords.filter((record) => (logLevelWeight[record.level] || 20) >= threshold); if (descending) records = [...records].reverse(); stream.replaceChildren();
   if (!records.length) { const empty = document.createElement('p'); empty.className = 'empty'; empty.textContent = '当前级别暂无日志'; stream.append(empty); }
-  records.forEach((record) => { const row = document.createElement('div'); row.className = `log-row ${$('#log-indent').checked ? 'indented' : ''}`; const time = document.createElement('span'); time.className = 'log-time'; time.textContent = new Date(record.timestamp).toLocaleString(); const level = document.createElement('span'); level.className = `log-level ${record.level}`; level.textContent = record.level; const name = document.createElement('span'); name.className = 'log-name'; name.textContent = record.logger; const message = document.createElement('span'); message.className = 'log-message'; message.textContent = record.message; row.append(time, level, name, message); stream.append(row); });
+  records.forEach((record) => { const row = document.createElement('div'); row.className = `log-row ${$('#log-indent').checked ? 'indented' : ''}`; const time = document.createElement('span'); time.className = 'log-time'; time.textContent = formatDateTime(record.timestamp); const level = document.createElement('span'); level.className = `log-level ${record.level}`; level.textContent = record.level; const name = document.createElement('span'); name.className = 'log-name'; name.textContent = record.logger; const message = document.createElement('span'); message.className = 'log-message'; message.textContent = record.message; row.append(time, level, name, message); stream.append(row); });
   $('#log-status').textContent = `${records.length} 条 · 游标 ${logCursor}`;
   if ($('#log-follow').checked) requestAnimationFrame(() => { stream.scrollTop = descending ? 0 : stream.scrollHeight; });
 }
@@ -333,6 +402,15 @@ $$('[data-go-view]').forEach((button) => button.addEventListener('click', () => 
 $('#add-instance').addEventListener('click', () => openInstance());
 $('#cancel-instance').addEventListener('click', () => { $('#instance-editor').hidden = true; $('#instance-form').reset(); });
 $('#refresh-logs').addEventListener('click', () => fetchLogs(true));
+$('#timezone-button').addEventListener('click', () => openTimezoneDialog(false));
+$('#timezone-cancel').addEventListener('click', () => $('#timezone-dialog').close());
+$('#timezone-dialog').addEventListener('cancel', (event) => { if ($('#timezone-dialog').dataset.required === 'true') event.preventDefault(); });
+$('#timezone-form').addEventListener('submit', async (event) => {
+  event.preventDefault(); const button = $('#timezone-save'); button.disabled = true; $('#timezone-error').textContent = '';
+  try { const result = await api('/api/dashboard/timezone', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ timezone: $('#timezone-select').value }) }); snapshot.dashboard_timezone = { ...result, configured: true }; $('#timezone-dialog').close(); notify(`时区已设置为 ${timezoneDisplayName(result.name)}`); await refresh(); }
+  catch (error) { $('#timezone-error').textContent = error.message; }
+  finally { button.disabled = false; }
+});
 ['log-level', 'log-order', 'log-follow', 'log-indent', 'log-nowrap'].forEach((id) => $(`#${id}`).addEventListener('change', renderLogs));
 window.addEventListener('resize', () => { if ($('[data-view-panel="traffic"]').classList.contains('active')) requestAnimationFrame(renderTraffic); });
 window.addEventListener('hashchange', () => showView(location.hash.slice(1), false));

@@ -26,6 +26,7 @@
       <div class="sidebar-status">
         <span id="connection-state" class="live"><i></i>实时状态</span>
         <time id="updated-at">--</time>
+        <button id="timezone-button" class="sidebar-command" type="button">时区 · UTC+8 北京时间</button>
       </div>
     </aside>
 
@@ -93,8 +94,17 @@
 
         <div class="view" data-view-panel="traffic">
           <section class="summary traffic-summary" aria-label="累计流量">
-            <div><span>累计上传</span><strong id="traffic-upload-total">--</strong><small>所有实例</small></div>
-            <div><span>累计下载</span><strong id="traffic-download-total">--</strong><small>所有实例</small></div>
+            <div><span>累计上传</span><strong id="traffic-upload-total">--</strong><small>今日 <b id="traffic-upload-today">--</b></small></div>
+            <div><span>累计下载</span><strong id="traffic-download-total">--</strong><small>今日 <b id="traffic-download-today">--</b></small></div>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><div><h2>Tracker 统计</h2><p>按实例统计种子数，并显示今日与累计流量</p></div><span id="tracker-count" class="context-label"></span></div>
+            <div class="table-wrap">
+              <table id="tracker-table">
+                <thead><tr id="tracker-head"></tr></thead>
+                <tbody id="tracker-body"><tr><td class="empty">暂无 tracker 数据</td></tr></tbody>
+              </table>
+            </div>
           </section>
           <div class="chart-grid">
             <section class="panel chart-panel">
@@ -106,15 +116,6 @@
               <canvas id="download-chart" aria-label="下载吞吐历史图"></canvas>
             </section>
           </div>
-          <section class="panel">
-            <div class="panel-head"><div><h2>Tracker 统计</h2><p>当前 torrent 数量、实时速度与累计流量</p></div><span id="tracker-count" class="context-label"></span></div>
-            <div class="table-wrap">
-              <table>
-                <thead><tr><th>Tracker</th><th>实例</th><th>种子数</th><th>活跃下载</th><th>上传速度</th><th>下载速度</th><th>累计上传</th><th>累计下载</th></tr></thead>
-                <tbody id="tracker-body"><tr><td colspan="8" class="empty">暂无 tracker 数据</td></tr></tbody>
-              </table>
-            </div>
-          </section>
         </div>
 
         <div class="view" data-view-panel="webhook">
@@ -138,8 +139,8 @@
                 <span class="switch"><input id="telegram-enabled" type="checkbox"><i aria-hidden="true"></i></span>
               </label>
               <div class="resource-links">
-                <a href="https://t.me/BotFather" target="_blank" rel="noopener noreferrer"><img class="button-icon" src="{{ url_for('static', filename='icons/link-round.svg') }}" alt="">打开 BotFather</a>
-                <a href="https://t.me/userinfobot" target="_blank" rel="noopener noreferrer"><img class="button-icon" src="{{ url_for('static', filename='icons/link-round.svg') }}" alt="">获取 Chat ID</a>
+                <a href="https://telegram.me/BotFather" target="_blank" rel="noopener noreferrer"><img class="button-icon" src="{{ url_for('static', filename='icons/link-round.svg') }}" alt="">打开 BotFather</a>
+                <a href="https://telegram.me/userinfobot" target="_blank" rel="noopener noreferrer"><img class="button-icon" src="{{ url_for('static', filename='icons/link-round.svg') }}" alt="">获取 Chat ID</a>
               </div>
               <label>Bot Token<input id="telegram-token" type="password" autocomplete="new-password" placeholder="留空则保持当前 Token"></label>
               <div class="settings-grid">
@@ -175,6 +176,16 @@
       </main>
     </div>
   </div>
+
+  <dialog id="timezone-dialog">
+    <form id="timezone-form" class="timezone-form">
+      <div><p class="eyebrow">DASHBOARD TIMEZONE</p><h2>选择统计时区</h2></div>
+      <p>“今日”上传和下载量会在所选时区的 00:00 重新开始统计。</p>
+      <label>时区<select id="timezone-select" required></select></label>
+      <p id="timezone-error" class="form-error" role="alert"></p>
+      <div class="settings-actions"><button id="timezone-cancel" class="button secondary" type="button">取消</button><button id="timezone-save" class="button" type="submit">保存时区</button></div>
+    </form>
+  </dialog>
 
   <div id="toast" class="toast" role="status"></div>
   <script src="{{ url_for('static', filename='dashboard.js') }}" defer></script>

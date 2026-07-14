@@ -13,10 +13,11 @@ import threading
 import logging
 import requests
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timedelta, timezone as datetime_timezone
 from typing import List, Dict, Optional
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import qbittorrentapi
 from webhook_server import WebhookServer
@@ -34,6 +35,8 @@ ERROR_RETRY_SLEEP = 5
 RECONNECT_INTERVAL = 180
 CONNECTION_TIMEOUT = 10
 STATUS_REFRESH_AFTER_ADD_DELAY = 1
+DAILY_TRAFFIC_SAVE_INTERVAL = 60
+DAILY_TRAFFIC_STATE_FILENAME = 'dashboard_traffic_state.json'
 
 # 网络和存储常量
 BYTES_TO_KB = 1024
@@ -80,7 +83,7 @@ class DashboardLogHandler(logging.Handler):
                 self.sequence += 1
                 self.records.append({
                     'id': self.sequence,
-                    'timestamp': datetime.fromtimestamp(record.created).isoformat(),
+                    'timestamp': datetime.fromtimestamp(record.created).astimezone().isoformat(),
                     'level': record.levelname,
                     'logger': record.name,
                     'message': message,
@@ -194,6 +197,8 @@ class InstanceInfo:
     traffic_check_url: str = ""  # 流量检查URL
     total_uploaded_bytes: int = 0  # qBittorrent累计上传流量
     total_downloaded_bytes: int = 0  # qBittorrent累计下载流量
+    today_uploaded_bytes: int = 0  # 当日上传流量
+    today_downloaded_bytes: int = 0  # 当日下载流量
     reserved_space: int = 0  # 需要保留的空闲空间 (bytes)
     last_update: datetime = field(default_factory=datetime.now)
     is_reconnecting: bool = False  # 是否正在重连中
@@ -224,9 +229,12 @@ class QBittorrentLoadBalancer:
         history_points = int(self.config.get('dashboard', {}).get('history_points', 120))
         self.metrics_history = deque(maxlen=max(10, min(history_points, 600)))
         self.metrics_history_lock = threading.Lock()
+        self.daily_traffic_lock = threading.Lock()
+        self.daily_traffic_last_saved = 0.0
         
         # 重新配置日志（支持文件输出）
         self._setup_logging()
+        self.daily_traffic_state = self._load_daily_traffic_state()
         self.telegram_notifier = TelegramNotifier(self.config)
         
         # 初始化webhook服务器
@@ -247,11 +255,148 @@ class QBittorrentLoadBalancer:
             else:  # 本地环境
                 log_dir = './logs'
         
-        logger = setup_logging(log_dir)
+        self.log_dir = os.path.abspath(log_dir)
+        self.daily_traffic_state_file = os.path.join(self.log_dir, DAILY_TRAFFIC_STATE_FILENAME)
+        logger = setup_logging(self.log_dir)
         log_capacity = int(self.config.get('dashboard', {}).get('log_limit', 1000))
         self.dashboard_log_handler = DashboardLogHandler(log_capacity)
         logging.getLogger().setLevel(logging.DEBUG)
         logging.getLogger().addHandler(self.dashboard_log_handler)
+
+    @staticmethod
+    def _empty_daily_traffic_state(current: datetime) -> dict:
+        return {'date': current.date().isoformat(), 'instances': {}}
+
+    def _dashboard_timezone_name(self) -> str:
+        dashboard = getattr(self, 'config', {}).get('dashboard', {})
+        return str(dashboard.get('timezone', 'Asia/Shanghai') or 'Asia/Shanghai')
+
+    def _dashboard_now(self) -> datetime:
+        try:
+            timezone = ZoneInfo(self._dashboard_timezone_name())
+        except ZoneInfoNotFoundError:
+            timezone = datetime_timezone(timedelta(hours=8), name='UTC+08:00')
+        return datetime.now(timezone)
+
+    def _load_daily_traffic_state(self) -> dict:
+        current = self._dashboard_now()
+        default = self._empty_daily_traffic_state(current)
+        try:
+            with open(self.daily_traffic_state_file, 'r', encoding='utf-8') as handle:
+                state = json.load(handle)
+            if state.get('date') != default['date'] or not isinstance(state.get('instances'), dict):
+                return default
+            return state
+        except FileNotFoundError:
+            return default
+        except (OSError, ValueError, TypeError) as exc:
+            logger.warning("读取Dashboard每日流量状态失败，将从当前值开始统计：%s", exc)
+            return default
+
+    def _save_daily_traffic_state_locked(self, force: bool = False) -> None:
+        """Persist daily counters atomically. Caller must hold daily_traffic_lock."""
+        if not getattr(self, 'daily_traffic_state_file', None):
+            return
+        current_monotonic = time.monotonic()
+        if not force and current_monotonic - self.daily_traffic_last_saved < DAILY_TRAFFIC_SAVE_INTERVAL:
+            return
+        os.makedirs(self.log_dir, exist_ok=True)
+        fd, temporary_path = tempfile.mkstemp(prefix='traffic-', suffix='.json', dir=self.log_dir)
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+                json.dump(self.daily_traffic_state, handle, ensure_ascii=False, separators=(',', ':'))
+                handle.write('\n')
+            os.replace(temporary_path, self.daily_traffic_state_file)
+            self.daily_traffic_last_saved = current_monotonic
+        except Exception:
+            self.daily_traffic_last_saved = current_monotonic
+            if os.path.exists(temporary_path):
+                os.unlink(temporary_path)
+            raise
+
+    @staticmethod
+    def _counter_delta(current: int, previous: Optional[int]) -> int:
+        if previous is None:
+            return 0
+        return current - previous if current >= previous else current
+
+    @staticmethod
+    def _tracker_name(torrent) -> str:
+        tracker_url = str(getattr(torrent, 'tracker', '') or '').strip()
+        tracker = urlparse(tracker_url).hostname if tracker_url else None
+        return (tracker or tracker_url or '无 Tracker').lower()
+
+    def _update_daily_traffic(self, instance: InstanceInfo, torrents: dict, current: Optional[datetime] = None) -> None:
+        current = current or self._dashboard_now()
+        if not hasattr(self, 'daily_traffic_lock'):
+            self.daily_traffic_lock = threading.Lock()
+        if not hasattr(self, 'daily_traffic_last_saved'):
+            self.daily_traffic_last_saved = 0.0
+        if not hasattr(self, 'daily_traffic_state'):
+            self.daily_traffic_state = self._empty_daily_traffic_state(current)
+
+        with self.daily_traffic_lock:
+            rolled_over = self.daily_traffic_state.get('date') != current.date().isoformat()
+            if rolled_over:
+                self.daily_traffic_state = self._empty_daily_traffic_state(current)
+
+            instances = self.daily_traffic_state.setdefault('instances', {})
+            state = instances.setdefault(instance.name, {
+                'today_uploaded_bytes': 0,
+                'today_downloaded_bytes': 0,
+                'trackers': {},
+                'torrents': {},
+            })
+
+            previous_uploaded = state.get('last_uploaded_bytes')
+            previous_downloaded = state.get('last_downloaded_bytes')
+            state['today_uploaded_bytes'] = int(state.get('today_uploaded_bytes', 0)) + self._counter_delta(
+                instance.total_uploaded_bytes, previous_uploaded
+            )
+            state['today_downloaded_bytes'] = int(state.get('today_downloaded_bytes', 0)) + self._counter_delta(
+                instance.total_downloaded_bytes, previous_downloaded
+            )
+            state['last_uploaded_bytes'] = instance.total_uploaded_bytes
+            state['last_downloaded_bytes'] = instance.total_downloaded_bytes
+
+            tracker_daily = state.setdefault('trackers', {})
+            torrent_counters = state.setdefault('torrents', {})
+            midnight_timestamp = current.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+            for torrent_hash, torrent in torrents.items():
+                tracker = self._tracker_name(torrent)
+                uploaded = max(0, int(getattr(torrent, 'uploaded', 0) or 0))
+                downloaded = max(0, int(getattr(torrent, 'downloaded', 0) or 0))
+                previous = torrent_counters.get(str(torrent_hash))
+                if previous is None:
+                    try:
+                        added_today = float(getattr(torrent, 'added_on', 0) or 0) >= midnight_timestamp
+                    except (TypeError, ValueError):
+                        added_today = False
+                    upload_delta = uploaded if added_today else 0
+                    download_delta = downloaded if added_today else 0
+                else:
+                    upload_delta = self._counter_delta(uploaded, int(previous.get('uploaded_bytes', 0)))
+                    download_delta = self._counter_delta(downloaded, int(previous.get('downloaded_bytes', 0)))
+                totals = tracker_daily.setdefault(tracker, {'uploaded_bytes': 0, 'downloaded_bytes': 0})
+                totals['uploaded_bytes'] += upload_delta
+                totals['downloaded_bytes'] += download_delta
+                torrent_counters[str(torrent_hash)] = {
+                    'tracker': tracker,
+                    'uploaded_bytes': uploaded,
+                    'downloaded_bytes': downloaded,
+                }
+
+            instance.today_uploaded_bytes = int(state['today_uploaded_bytes'])
+            instance.today_downloaded_bytes = int(state['today_downloaded_bytes'])
+            for tracker, stats in instance.tracker_stats.items():
+                today = tracker_daily.get(tracker, {})
+                stats['today_uploaded_bytes'] = int(today.get('uploaded_bytes', 0))
+                stats['today_downloaded_bytes'] = int(today.get('downloaded_bytes', 0))
+
+            try:
+                self._save_daily_traffic_state_locked(force=rolled_over)
+            except OSError as exc:
+                logger.warning("保存Dashboard每日流量状态失败：%s", exc)
         
     def _setup_environment(self) -> None:
         """设置运行环境"""
@@ -292,7 +437,15 @@ class QBittorrentLoadBalancer:
         self.config.setdefault('max_new_tasks_per_instance', 2)
         self.config.setdefault('webhook_ip_whitelist', [])
         self.config.setdefault('telegram', {'enabled': False})
-        self.config.setdefault('dashboard', {'enabled': False})
+        dashboard = self.config.setdefault('dashboard', {'enabled': False})
+        dashboard.setdefault('timezone', 'Asia/Shanghai')
+        dashboard.setdefault('timezone_configured', False)
+        try:
+            ZoneInfo(str(dashboard['timezone']))
+        except (ZoneInfoNotFoundError, ValueError):
+            logger.warning("Dashboard时区无效，恢复为Asia/Shanghai并要求重新选择")
+            dashboard['timezone'] = 'Asia/Shanghai'
+            dashboard['timezone_configured'] = False
         logger.info(f"状态更新间隔配置：{STATUS_REFRESH_INTERVAL}秒")
 
     def _init_instances(self) -> None:
@@ -495,6 +648,12 @@ class QBittorrentLoadBalancer:
                     'reserved_space_gib': round(instance.reserved_space / BYTES_TO_GB, 1),
                     'traffic_out_gib': round(instance.traffic_out / BYTES_TO_GB, 2),
                     'traffic_limit_gib': round(instance.traffic_limit / BYTES_TO_GB, 2),
+                    'today_uploaded_bytes': instance.today_uploaded_bytes,
+                    'today_downloaded_bytes': instance.today_downloaded_bytes,
+                    'today_traffic_bytes': instance.today_uploaded_bytes + instance.today_downloaded_bytes,
+                    'total_uploaded_bytes': instance.total_uploaded_bytes,
+                    'total_downloaded_bytes': instance.total_downloaded_bytes,
+                    'total_traffic_bytes': instance.total_uploaded_bytes + instance.total_downloaded_bytes,
                     'total_added_tasks': instance.total_added_tasks_count,
                     'last_update': instance.last_update.isoformat(),
                 }
@@ -511,7 +670,10 @@ class QBittorrentLoadBalancer:
                         'download_speed_kib': 0.0,
                         'uploaded_bytes': 0,
                         'downloaded_bytes': 0,
+                        'today_uploaded_bytes': 0,
+                        'today_downloaded_bytes': 0,
                         'instances': [],
+                        'instance_torrent_counts': {},
                     })
                     total['torrent_count'] += stats['torrent_count']
                     total['active_downloads'] += stats['active_downloads']
@@ -519,7 +681,10 @@ class QBittorrentLoadBalancer:
                     total['download_speed_kib'] += stats['download_speed_kib']
                     total['uploaded_bytes'] += stats['uploaded_bytes']
                     total['downloaded_bytes'] += stats['downloaded_bytes']
+                    total['today_uploaded_bytes'] += stats.get('today_uploaded_bytes', 0)
+                    total['today_downloaded_bytes'] += stats.get('today_downloaded_bytes', 0)
                     total['instances'].append(instance.name)
+                    total['instance_torrent_counts'][instance.name] = stats['torrent_count']
             tracker_stats = sorted(
                 tracker_totals.values(),
                 key=lambda item: (-item['torrent_count'], item['tracker']),
@@ -527,9 +692,15 @@ class QBittorrentLoadBalancer:
             for item in tracker_stats:
                 item['upload_speed_kib'] = round(item['upload_speed_kib'], 1)
                 item['download_speed_kib'] = round(item['download_speed_kib'], 1)
+                item['instance_torrent_counts'] = [
+                    {'name': name, 'torrent_count': count}
+                    for name, count in sorted(item['instance_torrent_counts'].items())
+                ]
             traffic_totals = {
                 'uploaded_bytes': sum(instance.total_uploaded_bytes for instance in self.instances),
                 'downloaded_bytes': sum(instance.total_downloaded_bytes for instance in self.instances),
+                'today_uploaded_bytes': sum(instance.today_uploaded_bytes for instance in self.instances),
+                'today_downloaded_bytes': sum(instance.today_downloaded_bytes for instance in self.instances),
             }
         history_lock = getattr(self, 'metrics_history_lock', None)
         if history_lock:
@@ -542,6 +713,7 @@ class QBittorrentLoadBalancer:
         with self.config_lock:
             whitelist = list(self.config.get('webhook_ip_whitelist', []))
             telegram = self.config.get('telegram', {})
+            dashboard = self.config.get('dashboard', {})
             active_notifier = getattr(self, 'telegram_notifier', None)
             telegram_status = {
                 'enabled': bool(active_notifier and active_notifier.enabled),
@@ -570,8 +742,13 @@ class QBittorrentLoadBalancer:
             'metrics_history': metrics_history,
             'tracker_stats': tracker_stats,
             'traffic_totals': traffic_totals,
+            'dashboard_timezone': {
+                'name': str(dashboard.get('timezone', 'Asia/Shanghai')),
+                'configured': bool(dashboard.get('timezone_configured', False)),
+                'date': self._dashboard_now().date().isoformat(),
+            },
             'sort_key': self.config.get('primary_sort_key', DEFAULT_PRIMARY_SORT_KEY),
-            'updated_at': datetime.now().isoformat(),
+            'updated_at': self._dashboard_now().isoformat(),
         }
 
     def is_webhook_ip_allowed(self, address: str) -> bool:
@@ -814,6 +991,34 @@ class QBittorrentLoadBalancer:
             'timeout': timeout,
         }
 
+    def update_dashboard_timezone(self, timezone_name: str) -> dict:
+        """Persist the Dashboard timezone and reset today's traffic baseline."""
+        timezone_name = str(timezone_name or '').strip()
+        try:
+            timezone = ZoneInfo(timezone_name)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise ValueError('invalid timezone')
+
+        with self.config_lock:
+            candidate = json.loads(json.dumps(self.config))
+            dashboard = candidate.setdefault('dashboard', {})
+            dashboard['timezone'] = timezone_name
+            dashboard['timezone_configured'] = True
+            self._replace_config_locked(candidate)
+
+        current = datetime.now(timezone)
+        with self.instances_lock:
+            with self.daily_traffic_lock:
+                self.daily_traffic_state = self._empty_daily_traffic_state(current)
+                for instance in self.instances:
+                    instance.today_uploaded_bytes = 0
+                    instance.today_downloaded_bytes = 0
+                    for stats in instance.tracker_stats.values():
+                        stats['today_uploaded_bytes'] = 0
+                        stats['today_downloaded_bytes'] = 0
+                self._save_daily_traffic_state_locked(force=True)
+        return {'name': timezone_name, 'date': current.date().isoformat()}
+
     def send_telegram_test(self) -> bool:
         notifier = getattr(self, 'telegram_notifier', None)
         if not notifier:
@@ -848,7 +1053,7 @@ class QBittorrentLoadBalancer:
         if history is not None and history_lock:
             with history_lock:
                 history.append({
-                    'timestamp': datetime.now().isoformat(),
+                    'timestamp': self._dashboard_now().isoformat(),
                     'upload_speed_kib': round(upload_speed, 1),
                     'download_speed_kib': round(download_speed, 1),
                 })
@@ -890,12 +1095,14 @@ class QBittorrentLoadBalancer:
         instance.free_space = server_state.get('free_space_on_disk', 0)
         
         # 从torrents信息计算活跃下载数
-        all_torrents = list(maindata.get('torrents', {}).values())
+        torrents_by_hash = dict(maindata.get('torrents', {}))
+        all_torrents = list(torrents_by_hash.values())
         instance.active_downloads = len([t for t in all_torrents if t.state == 'downloading'])
         instance.waiting_downloads_count = len([
             t for t in all_torrents if t.state in WAITING_DOWNLOAD_STATES
         ])
         instance.tracker_stats = self._aggregate_tracker_stats(all_torrents)
+        self._update_daily_traffic(instance, torrents_by_hash)
         
         instance.last_update = datetime.now()
         instance.success_metrics_count += 1  # 成功获取统计信息，计数器加1
@@ -918,9 +1125,7 @@ class QBittorrentLoadBalancer:
         """Aggregate live torrent counts and speeds by current tracker host."""
         trackers = {}
         for torrent in torrents:
-            tracker_url = str(getattr(torrent, 'tracker', '') or '').strip()
-            tracker = urlparse(tracker_url).hostname if tracker_url else None
-            tracker = (tracker or tracker_url or '无 Tracker').lower()
+            tracker = QBittorrentLoadBalancer._tracker_name(torrent)
             stats = trackers.setdefault(tracker, {
                 'torrent_count': 0,
                 'active_downloads': 0,
@@ -928,6 +1133,8 @@ class QBittorrentLoadBalancer:
                 'download_speed_kib': 0.0,
                 'uploaded_bytes': 0,
                 'downloaded_bytes': 0,
+                'today_uploaded_bytes': 0,
+                'today_downloaded_bytes': 0,
             })
             stats['torrent_count'] += 1
             if getattr(torrent, 'state', '') == 'downloading':

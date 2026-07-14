@@ -131,16 +131,19 @@ python run.py
     "password": "change-this-password",
     "event_limit": 100,
     "history_points": 120,
-    "log_limit": 1000
+    "log_limit": 1000,
+    "timezone": "Asia/Shanghai",
+    "timezone_configured": false
 }
 ```
 
 启动后访问 `http://<服务器IP>:50000/dashboard`，浏览器会要求输入上述用户名和密码。Dashboard 支持：
 
-- 查看各实例连接状态、实时上传/下载速度、任务数、剩余空间、保留空间和流量
+- 查看各实例连接状态、实时上传/下载速度、今日与累计上传/下载量、总流量、任务数和剩余空间
 - 打开、克隆、编辑、删除 qBittorrent 实例，或仅快捷修改 IP；保存后立即连接
 - 拖动实例表列头调整顺序，点击列头切换升序/降序
-- 分别查看上传/下载吞吐图与按 tracker 聚合的实时统计
+- 分别查看上传/下载吞吐图，以及可排序的 tracker 今日/累计流量和各实例种子数统计
+- 首次访问选择 Dashboard 时区（默认 UTC+8 北京时间）；“今日”流量按该时区 00:00 归零
 - 按级别实时查看日志，并控制顺序、自动跟随、换行缩进和单行显示
 - 添加或移除 Webhook IPv4、IPv6、CIDR 白名单
 - 配置、启停 Telegram Bot，并发送测试通知；Token 留空可保留已保存值
@@ -165,7 +168,7 @@ python run.py
 
 Telegram 消息由后台队列发送，不会阻塞 Webhook 请求。
 
-Dashboard 中的“发送测试通知”会同步请求 Telegram API，并直接返回无效 Token、Chat ID 或网络错误。Bot Token 可通过 [BotFather](https://t.me/BotFather) 获取，Chat ID 可通过 [userinfobot](https://t.me/userinfobot) 查询。
+Dashboard 中的“发送测试通知”会同步请求 Telegram API，并直接返回无效 Token、Chat ID 或网络错误。Bot Token 可通过 [BotFather](https://telegram.me/BotFather) 获取，Chat ID 可通过 [userinfobot](https://telegram.me/userinfobot) 查询。
 
 ## 配置示例
 请参考config.json.example
@@ -185,17 +188,23 @@ Dashboard 中的“发送测试通知”会同步请求 Telegram API，并直接
 ./docker-start.sh start     # 启动服务
 ./docker-start.sh stop      # 停止服务
 ./docker-start.sh restart   # 重启服务
+./docker-start.sh update    # 更新到origin/main最新提交并重启
 ./docker-start.sh logs      # 查看日志
 ./docker-start.sh status    # 查看状态
 ./docker-start.sh clean     # 清理当前Compose项目容器
+./docker-start.sh enable-auto-update   # 每5分钟自动检查并更新
+./docker-start.sh disable-auto-update  # 停用自动更新
 ```
 
 升级到最新版本：
 
 ```bash
-git pull origin main
-./docker-start.sh restart
+./docker-start.sh update
 ```
+
+自动更新使用当前用户的 crontab，每 5 分钟检查一次 `origin/main`，日志写入 `logs/auto-update.log`。只有 `main` 分支、受 Git 跟踪的文件无本地修改且可以快进时才会更新，不会覆盖本地改动。
+
+每日流量状态保存在 `logs/dashboard_traffic_state.json`，容器重启后会继续累计。首次升级当天无法从 qBittorrent 反推零点时的历史计数，因此从升级后的首次采样开始统计；下一次所选时区的 00:00 起按完整自然日统计。
 
 ## API 接口
 
@@ -204,6 +213,7 @@ git pull origin main
 - `GET /dashboard`: Dashboard（HTTP Basic 认证）
 - `/api/dashboard/*`: Dashboard 管理 API（HTTP Basic 认证）
 - `GET /api/dashboard/logs`: Dashboard 增量日志（HTTP Basic 认证）
+- `POST /api/dashboard/timezone`: 保存 Dashboard 时区并重置当日流量基线（HTTP Basic 认证）
 
 ## 日志
 

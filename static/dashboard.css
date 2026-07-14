@@ -45,6 +45,8 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .live { display: inline-flex; align-items: center; gap: 8px; color: #d9e1e4; }
 .live i { width: 8px; height: 8px; border-radius: 50%; background: #43d19e; box-shadow: 0 0 0 3px rgb(67 209 158 / 16%); }
 .live.offline i { background: #ff8787; box-shadow: none; }
+.sidebar-command { padding: 0; border: 0; color: #81c9b3; background: transparent; text-align: left; font-size: 11px; cursor: pointer; }
+.sidebar-command:hover { color: #b8eadb; text-decoration: underline; }
 
 .content-shell { min-width: 0; }
 .page-header { min-height: 92px; padding: 20px clamp(18px, 3vw, 40px); display: flex; align-items: center; justify-content: space-between; gap: 18px; color: #fff; background: #202c31; border-bottom: 3px solid #16a085; }
@@ -63,6 +65,7 @@ main { width: min(1500px, calc(100% - 36px)); margin: 20px auto 48px; }
 .summary strong { font: 650 21px/1.1 var(--font-ui); }
 .traffic-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .traffic-summary small { display: block; margin-top: 6px; color: var(--muted); font-size: 11px; }
+.traffic-summary small b { color: #34434a; font-weight: 600; }
 .overview-grid, .chart-grid { margin-top: 18px; display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
 .panel { margin-bottom: 18px; background: #fff; border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }
 .panel-head { min-height: 66px; padding: 14px 17px; display: flex; align-items: center; justify-content: space-between; gap: 15px; border-bottom: 1px solid var(--line); }
@@ -118,6 +121,7 @@ tr:last-child td { border-bottom: 0; }
 .chart-panel canvas { width: 100%; height: 280px; display: block; }
 .chart-panel { min-width: 0; }
 #tracker-body td:first-child { max-width: 340px; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-ui); }
+#tracker-table td:nth-child(3) { min-width: 170px; }
 
 .settings-panel { width: min(780px, 100%); }
 .inline-form { display: flex; gap: 8px; padding: 18px 18px 9px; }
@@ -198,6 +202,12 @@ input:focus { outline: 2px solid rgb(8 126 139 / 24%); border-color: var(--cyan)
 .toast { position: fixed; right: 20px; bottom: 20px; z-index: 50; max-width: min(400px, calc(100% - 40px)); padding: 11px 14px; border-radius: 4px; color: #fff; background: #26343a; box-shadow: 0 8px 30px rgb(0 0 0 / 20%); font-size: 13px; opacity: 0; transform: translateY(8px); pointer-events: none; transition: .2s ease; }
 .toast.show { opacity: 1; transform: translateY(0); }
 code { overflow-wrap: anywhere; }
+dialog { width: min(520px, calc(100% - 32px)); padding: 0; border: 1px solid var(--line); border-radius: 6px; color: #182026; background: #fff; box-shadow: 0 18px 60px rgb(0 0 0 / 28%); }
+dialog::backdrop { background: rgb(12 20 24 / 58%); }
+.timezone-form { padding: 22px; display: grid; gap: 16px; }
+.timezone-form > p { margin: 0; color: var(--muted); font-size: 13px; }
+.timezone-form > label { display: grid; gap: 6px; color: #3f4c52; font-size: 12px; font-weight: 600; }
+.timezone-form select { width: 100%; min-height: 40px; padding: 8px 10px; color: #182026; background: #fff; border: 1px solid #aeb9be; border-radius: 4px; }
 
 @media (max-width: 980px) {
   .app-shell { grid-template-columns: 1fr; }

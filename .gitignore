@@ -5,3 +5,5 @@ task.md
 node_modules/
 test-results/
 dashboard-*.png
+logs/
+__pycache__/

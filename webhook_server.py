@@ -235,6 +235,20 @@ class WebhookServer:
             self.record_event('config', 'Telegram Bot', state, request.remote_addr or '')
             return jsonify(result)
 
+        @self.app.route('/api/dashboard/timezone', methods=['POST'])
+        @self._dashboard_auth_required
+        def save_dashboard_timezone():
+            payload = request.get_json(silent=True) or {}
+            try:
+                result = self.torrent_manager.update_dashboard_timezone(payload.get('timezone', ''))
+            except ValueError as exc:
+                return jsonify({'error': str(exc)}), 400
+            except OSError as exc:
+                logger.error("保存Dashboard时区失败：%s", exc)
+                return jsonify({'error': 'Failed to persist configuration'}), 500
+            self.record_event('config', 'Dashboard timezone', result['name'], request.remote_addr or '')
+            return jsonify(result)
+
         @self.app.route('/api/dashboard/telegram/test', methods=['POST'])
         @self._dashboard_auth_required
         def test_telegram_config():
@@ -261,7 +275,7 @@ class WebhookServer:
             'release_name': release_name,
             'detail': detail,
             'source_ip': source_ip,
-            'timestamp': datetime.now().isoformat(),
+            'timestamp': datetime.now().astimezone().isoformat(),
         }
         with self.events_lock:
             self.events.appendleft(event)

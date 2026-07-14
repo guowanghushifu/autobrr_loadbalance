@@ -282,6 +282,8 @@ class DashboardTrafficSnapshotTest(unittest.TestCase):
                 password="pass",
                 total_uploaded_bytes=3_000_000_000_000,
                 total_downloaded_bytes=4_000_000_000_000,
+                today_uploaded_bytes=30_000_000_000,
+                today_downloaded_bytes=40_000_000_000,
                 tracker_stats={
                     "tracker.example": {
                         "torrent_count": 2,
@@ -290,9 +292,33 @@ class DashboardTrafficSnapshotTest(unittest.TestCase):
                         "download_speed_kib": 2000.0,
                         "uploaded_bytes": 2_500_000_000_000,
                         "downloaded_bytes": 3_250_000_000_000,
+                        "today_uploaded_bytes": 25_000_000_000,
+                        "today_downloaded_bytes": 32_000_000_000,
                     }
                 },
-            )
+            ),
+            main.InstanceInfo(
+                name="test-2",
+                url="http://example-2.invalid",
+                username="user",
+                password="pass",
+                total_uploaded_bytes=1_000_000_000_000,
+                total_downloaded_bytes=2_000_000_000_000,
+                today_uploaded_bytes=10_000_000_000,
+                today_downloaded_bytes=20_000_000_000,
+                tracker_stats={
+                    "tracker.example": {
+                        "torrent_count": 3,
+                        "active_downloads": 2,
+                        "upload_speed_kib": 500.0,
+                        "download_speed_kib": 750.0,
+                        "uploaded_bytes": 1_000_000_000_000,
+                        "downloaded_bytes": 2_000_000_000_000,
+                        "today_uploaded_bytes": 10_000_000_000,
+                        "today_downloaded_bytes": 20_000_000_000,
+                    }
+                },
+            ),
         ]
         balancer.instances_lock = threading.Lock()
         balancer.metrics_history = []
@@ -305,10 +331,85 @@ class DashboardTrafficSnapshotTest(unittest.TestCase):
 
         snapshot = balancer.get_dashboard_snapshot()
 
-        self.assertEqual(3_000_000_000_000, snapshot["traffic_totals"]["uploaded_bytes"])
-        self.assertEqual(4_000_000_000_000, snapshot["traffic_totals"]["downloaded_bytes"])
-        self.assertEqual(2_500_000_000_000, snapshot["tracker_stats"][0]["uploaded_bytes"])
-        self.assertEqual(3_250_000_000_000, snapshot["tracker_stats"][0]["downloaded_bytes"])
+        self.assertEqual(4_000_000_000_000, snapshot["traffic_totals"]["uploaded_bytes"])
+        self.assertEqual(6_000_000_000_000, snapshot["traffic_totals"]["downloaded_bytes"])
+        self.assertEqual(40_000_000_000, snapshot["traffic_totals"]["today_uploaded_bytes"])
+        self.assertEqual(60_000_000_000, snapshot["traffic_totals"]["today_downloaded_bytes"])
+        self.assertEqual(3_500_000_000_000, snapshot["tracker_stats"][0]["uploaded_bytes"])
+        self.assertEqual(5_250_000_000_000, snapshot["tracker_stats"][0]["downloaded_bytes"])
+        self.assertEqual(
+            [{"name": "test", "torrent_count": 2}, {"name": "test-2", "torrent_count": 3}],
+            snapshot["tracker_stats"][0]["instance_torrent_counts"],
+        )
+
+
+class DailyTrafficTest(unittest.TestCase):
+    def _balancer(self, current):
+        balancer = main.QBittorrentLoadBalancer.__new__(main.QBittorrentLoadBalancer)
+        balancer.daily_traffic_lock = threading.Lock()
+        balancer.daily_traffic_last_saved = 0.0
+        balancer.daily_traffic_state = balancer._empty_daily_traffic_state(current)
+        return balancer
+
+    def test_daily_traffic_accumulates_deltas_and_resets_on_local_midnight(self):
+        current = main.datetime(2026, 7, 14, 8, 0, tzinfo=main.ZoneInfo('Asia/Shanghai'))
+        balancer = self._balancer(current)
+        instance = main.InstanceInfo(name='test', url='http://qb', username='user', password='pass', total_uploaded_bytes=1000, total_downloaded_bytes=2000)
+        torrent = types.SimpleNamespace(tracker='https://tracker.example/announce', uploaded=300, downloaded=400, added_on=current.timestamp() - 86400)
+        torrents = {'hash': torrent}
+        instance.tracker_stats = balancer._aggregate_tracker_stats(torrents.values())
+
+        balancer._update_daily_traffic(instance, torrents, current)
+        self.assertEqual(0, instance.today_uploaded_bytes)
+        self.assertEqual(0, instance.tracker_stats['tracker.example']['today_uploaded_bytes'])
+
+        instance.total_uploaded_bytes = 1500
+        instance.total_downloaded_bytes = 2600
+        torrent.uploaded = 500
+        torrent.downloaded = 700
+        instance.tracker_stats = balancer._aggregate_tracker_stats(torrents.values())
+        balancer._update_daily_traffic(instance, torrents, current.replace(hour=9))
+
+        self.assertEqual(500, instance.today_uploaded_bytes)
+        self.assertEqual(600, instance.today_downloaded_bytes)
+        self.assertEqual(200, instance.tracker_stats['tracker.example']['today_uploaded_bytes'])
+        self.assertEqual(300, instance.tracker_stats['tracker.example']['today_downloaded_bytes'])
+
+        instance.tracker_stats = balancer._aggregate_tracker_stats(torrents.values())
+        balancer._update_daily_traffic(instance, torrents, current.replace(day=15, hour=0, minute=1))
+        self.assertEqual(0, instance.today_uploaded_bytes)
+        self.assertEqual(0, instance.tracker_stats['tracker.example']['today_uploaded_bytes'])
+
+    def test_new_torrent_added_today_counts_traffic_before_first_poll(self):
+        current = main.datetime(2026, 7, 14, 8, 0, tzinfo=main.ZoneInfo('Asia/Shanghai'))
+        balancer = self._balancer(current)
+        instance = main.InstanceInfo(name='test', url='http://qb', username='user', password='pass')
+        torrent = types.SimpleNamespace(tracker='https://tracker.example/announce', uploaded=300, downloaded=400, added_on=current.timestamp() - 60)
+        torrents = {'new-hash': torrent}
+        instance.tracker_stats = balancer._aggregate_tracker_stats(torrents.values())
+
+        balancer._update_daily_traffic(instance, torrents, current)
+
+        self.assertEqual(300, instance.tracker_stats['tracker.example']['today_uploaded_bytes'])
+        self.assertEqual(400, instance.tracker_stats['tracker.example']['today_downloaded_bytes'])
+
+    def test_daily_traffic_state_survives_restart(self):
+        current = main.datetime.now(main.ZoneInfo('Asia/Shanghai'))
+        with tempfile.TemporaryDirectory() as directory:
+            balancer = self._balancer(current)
+            balancer.log_dir = directory
+            balancer.daily_traffic_state_file = os.path.join(directory, 'traffic.json')
+            balancer.daily_traffic_state['instances']['test'] = {'today_uploaded_bytes': 123}
+            with balancer.daily_traffic_lock:
+                balancer._save_daily_traffic_state_locked(force=True)
+
+            restored = main.QBittorrentLoadBalancer.__new__(main.QBittorrentLoadBalancer)
+            restored.config = {'dashboard': {'timezone': 'Asia/Shanghai'}}
+            restored.daily_traffic_state_file = balancer.daily_traffic_state_file
+
+            state = restored._load_daily_traffic_state()
+
+            self.assertEqual(123, state['instances']['test']['today_uploaded_bytes'])
 
 
 class DashboardConfigurationTest(unittest.TestCase):
@@ -395,6 +496,25 @@ class DashboardConfigurationTest(unittest.TestCase):
             self.assertTrue(result['enabled'])
             self.assertEqual('saved-token', balancer.config['telegram']['bot_token'])
             self.assertEqual('new-chat', balancer.config['telegram']['chat_id'])
+
+    def test_dashboard_timezone_is_validated_persisted_and_resets_today(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_file = os.path.join(directory, 'config.json')
+            balancer = self._balancer({'dashboard': {}, 'qbittorrent_instances': []}, config_file)
+            balancer.log_dir = directory
+            balancer.daily_traffic_state_file = os.path.join(directory, 'traffic.json')
+            balancer.daily_traffic_lock = threading.Lock()
+            balancer.daily_traffic_last_saved = 0.0
+            balancer.daily_traffic_state = {'date': '2000-01-01', 'instances': {'old': {}}}
+            balancer.instances = [main.InstanceInfo(name='test', url='http://qb', username='user', password='pass', today_uploaded_bytes=99)]
+
+            result = balancer.update_dashboard_timezone('Europe/London')
+
+            self.assertEqual('Europe/London', result['name'])
+            self.assertTrue(balancer.config['dashboard']['timezone_configured'])
+            self.assertEqual(0, balancer.instances[0].today_uploaded_bytes)
+            with self.assertRaisesRegex(ValueError, 'invalid timezone'):
+                balancer.update_dashboard_timezone('Not/A-Timezone')
 
     def test_clone_instance_preserves_secret_and_uses_unique_name(self):
         with tempfile.TemporaryDirectory() as directory:
