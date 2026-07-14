@@ -82,7 +82,12 @@ get_server_ip() {
             * ) echo "$address"; return ;;
         esac
     done
-    echo "127.0.0.1"
+    address=$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i=1; i<=NF; i++) if ($i == "src") {print $(i+1); exit}}')
+    if [ -n "$address" ]; then
+        echo "$address"
+        return
+    fi
+    hostname
 }
 
 # 显示使用帮助
@@ -115,7 +120,7 @@ case "${1:-start}" in
         print_message "服务已启动！" $GREEN
         print_message "服务地址: http://${server_ip}:50000" $BLUE
         print_message "Dashboard: http://${server_ip}:50000/dashboard" $BLUE
-        print_message "健康检查: curl http://127.0.0.1:50000/health" $BLUE
+        print_message "健康检查: curl http://${server_ip}:50000/health" $BLUE
         print_message "查看日志: ./docker-start.sh logs" $BLUE
         ;;
     
