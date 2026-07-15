@@ -7,7 +7,7 @@
             "password": "your_password",
             "traffic_check_url": "",
             "traffic_limit": 0,
-            "reserved_space": 21504
+            "reserved_space": 0
         },
         {
             "name": "qBittorrent-2",
@@ -16,11 +16,28 @@
             "password": "your_password",
             "traffic_check_url": "",
             "traffic_limit": 0,
-            "reserved_space": 21504
+            "reserved_space": 0
         }
     ],
     "webhook_port": 50000,
     "webhook_path": "/webhook/secure-a8f9c2e1-4b3d-9876-abcd-ef0123456789",
+    "webhook_ip_whitelist": [],
+    "dashboard": {
+        "enabled": true,
+        "username": "admin",
+        "password": "change-this-password",
+        "event_limit": 100,
+        "history_points": 120,
+        "log_limit": 1000,
+        "timezone": "Asia/Shanghai",
+        "timezone_configured": false
+    },
+    "telegram": {
+        "enabled": false,
+        "bot_token": "",
+        "chat_id": "",
+        "timeout": 10
+    },
     "max_new_tasks_per_instance": 2,
     "reconnect_interval": 120,
     "max_reconnect_attempts": 1,

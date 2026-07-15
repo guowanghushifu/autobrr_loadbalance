@@ -25,6 +25,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY main.py .
 COPY run.py .
 COPY webhook_server.py .
+COPY telegram_notifier.py .
+COPY templates ./templates
+COPY static ./static
 
 # 创建必要的目录
 RUN mkdir -p /app/logs
@@ -43,4 +46,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 EXPOSE 50000
 
 # 启动命令
-CMD ["python", "run.py"] 
+CMD ["python", "run.py"]

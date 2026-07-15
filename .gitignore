@@ -1,5 +1,9 @@
 .DS_Store
-.gitattributes
 config.json
 torrents/*
 task.md
+node_modules/
+test-results/
+dashboard-*.png
+logs/
+__pycache__/

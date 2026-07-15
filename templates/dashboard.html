@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>QB Load Balancer</title>
+  <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
+  <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <img src="{{ url_for('static', filename='favicon.svg') }}" alt="">
+        <div><strong>QB Load Balancer</strong><small>Operations Console</small></div>
+      </div>
+      <nav class="side-nav" aria-label="Dashboard 导航">
+        <button class="nav-item active" data-view="overview" type="button"><img src="{{ url_for('static', filename='icons/widget.svg') }}" alt="">概览</button>
+        <button class="nav-item" data-view="instances" type="button"><img src="{{ url_for('static', filename='icons/server.svg') }}" alt="">实例</button>
+        <button class="nav-item" data-view="traffic" type="button"><img src="{{ url_for('static', filename='icons/chart-square.svg') }}" alt="">流量分析</button>
+        <button class="nav-item" data-view="webhook" type="button"><img src="{{ url_for('static', filename='icons/link-round.svg') }}" alt="">Webhook</button>
+        <button class="nav-item" data-view="telegram" type="button"><img src="{{ url_for('static', filename='icons/chat-round-dots.svg') }}" alt="">Telegram</button>
+        <button class="nav-item" data-view="events" type="button"><img src="{{ url_for('static', filename='icons/history.svg') }}" alt="">事件</button>
+        <button class="nav-item" data-view="logs" type="button"><img src="{{ url_for('static', filename='icons/document-text.svg') }}" alt="">日志</button>
+      </nav>
+      <div class="sidebar-status">
+        <span id="connection-state" class="live"><i></i>实时状态</span>
+        <time id="updated-at">--</time>
+        <button id="timezone-button" class="sidebar-command" type="button">时区 · UTC+8 北京时间</button>
+      </div>
+    </aside>
+
+    <div class="content-shell">
+      <header class="page-header">
+        <div><p class="eyebrow">QB LOAD BALANCER</p><h1 id="page-title">概览</h1></div>
+        <span id="sort-key" class="context-label"></span>
+      </header>
+
+      <main>
+        <div class="view active" data-view-panel="overview">
+          <section class="summary" aria-label="运行摘要">
+            <div><span>已连接实例</span><strong id="connected-count">--</strong></div>
+            <div><span>当前上传</span><strong id="total-upload">--</strong></div>
+            <div><span>当前下载</span><strong id="total-download">--</strong></div>
+            <div><span>等待分配</span><strong id="pending-count">--</strong></div>
+          </section>
+          <div class="overview-grid">
+            <section class="panel">
+              <div class="panel-head"><div><h2>实例状态</h2><p>连接、任务与磁盘余量</p></div><button class="text-command" data-go-view="instances" type="button">管理实例</button></div>
+              <div id="overview-instances" class="overview-instances"><p class="empty">正在读取状态...</p></div>
+            </section>
+            <section class="panel">
+              <div class="panel-head"><div><h2>最近事件</h2><p>Webhook 与配置变化</p></div><button class="text-command" data-go-view="events" type="button">查看全部</button></div>
+              <ol id="overview-events" class="events compact"><li class="empty">暂无事件</li></ol>
+            </section>
+          </div>
+        </div>
+
+        <div class="view" data-view-panel="instances">
+          <section class="panel">
+            <div class="panel-head">
+              <div><h2>qBittorrent 实例</h2><p>实时速度、任务与剩余空间</p></div>
+              <div class="actions">
+                <label class="button secondary" for="config-file"><img class="button-icon" src="{{ url_for('static', filename='icons/import.svg') }}" alt="">导入 config.json</label>
+                <input id="config-file" type="file" accept="application/json,.json" hidden>
+                <button id="add-instance" class="button" type="button"><img class="button-icon" src="{{ url_for('static', filename='icons/add-circle.svg') }}" alt="">添加实例</button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table id="instances-table">
+                <thead><tr id="instances-head"></tr></thead>
+                <tbody id="instances-body"><tr><td class="empty">正在读取实例状态...</td></tr></tbody>
+              </table>
+            </div>
+            <div id="instance-editor" class="instance-editor" hidden>
+              <div class="editor-head"><h2 id="editor-title">添加实例</h2><button id="cancel-instance" class="text-command" type="button">取消编辑</button></div>
+              <form id="instance-form">
+                <input id="original-name" type="hidden">
+                <div class="form-grid">
+                  <label>名称<input id="instance-name" required></label>
+                  <label>Web UI 地址<input id="instance-url" type="url" placeholder="http://192.168.1.100:8080" required></label>
+                  <label>用户名<input id="instance-username" required></label>
+                  <label>密码<input id="instance-password" type="password"><small id="password-hint"></small></label>
+                  <label>流量检查 URL<input id="traffic-url" type="url" placeholder="可选"></label>
+                  <label>流量限制 (MB)<input id="traffic-limit" type="number" min="0" step="1" value="0"></label>
+                  <label>保留空间 (MB)<input id="reserved-space" type="number" min="0" step="1" value="0"></label>
+                </div>
+                <p id="instance-error" class="form-error" role="alert"></p>
+                <div class="editor-actions"><button id="save-instance" class="button" type="submit"><img class="button-icon" src="{{ url_for('static', filename='icons/diskette.svg') }}" alt="">保存并连接</button></div>
+              </form>
+            </div>
+          </section>
+        </div>
+
+        <div class="view" data-view-panel="traffic">
+          <section class="summary traffic-summary" aria-label="累计流量">
+            <div><span>累计上传</span><strong id="traffic-upload-total">--</strong><small>今日 <b id="traffic-upload-today">--</b></small></div>
+            <div><span>累计下载</span><strong id="traffic-download-total">--</strong><small>今日 <b id="traffic-download-today">--</b></small></div>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><div><h2>Tracker 统计</h2><p>按实例统计种子数，并显示今日与累计流量</p></div><span id="tracker-count" class="context-label"></span></div>
+            <div class="table-wrap">
+              <table id="tracker-table">
+                <thead><tr id="tracker-head"></tr></thead>
+                <tbody id="tracker-body"><tr><td class="empty">暂无 tracker 数据</td></tr></tbody>
+              </table>
+            </div>
+          </section>
+          <div class="chart-grid">
+            <section class="panel chart-panel">
+              <div class="panel-head"><div><h2>上传吞吐</h2><p>所有已连接实例</p></div><strong id="chart-upload-now">--</strong></div>
+              <canvas id="upload-chart" aria-label="上传吞吐历史图"></canvas>
+            </section>
+            <section class="panel chart-panel">
+              <div class="panel-head"><div><h2>下载吞吐</h2><p>所有已连接实例</p></div><strong id="chart-download-now">--</strong></div>
+              <canvas id="download-chart" aria-label="下载吞吐历史图"></canvas>
+            </section>
+          </div>
+        </div>
+
+        <div class="view" data-view-panel="webhook">
+          <section class="panel settings-panel">
+            <div class="panel-head"><div><h2>Webhook IP 白名单</h2><p><code>{{ webhook_path }}</code></p></div></div>
+            <form id="whitelist-form" class="inline-form">
+              <input id="whitelist-entry" name="entry" placeholder="192.168.1.10 或 10.0.0.0/24" autocomplete="off" required>
+              <button class="button" type="submit"><img class="button-icon" src="{{ url_for('static', filename='icons/add-circle.svg') }}" alt="">添加</button>
+            </form>
+            <p id="whitelist-mode" class="notice"></p>
+            <div id="whitelist-list" class="tag-list"></div>
+          </section>
+        </div>
+
+        <div class="view" data-view-panel="telegram">
+          <section class="panel settings-panel">
+            <div class="panel-head"><div><h2>Telegram Bot</h2><p>分配结果与实例状态通知</p></div></div>
+            <form id="telegram-form" class="settings-form">
+              <label class="toggle-row">
+                <span><strong>启用通知</strong><small id="telegram-state">尚未配置</small></span>
+                <span class="switch"><input id="telegram-enabled" type="checkbox"><i aria-hidden="true"></i></span>
+              </label>
+              <div class="resource-links">
+                <a href="https://telegram.me/BotFather" target="_blank" rel="noopener noreferrer"><img class="button-icon" src="{{ url_for('static', filename='icons/link-round.svg') }}" alt="">打开 BotFather</a>
+                <a href="https://telegram.me/userinfobot" target="_blank" rel="noopener noreferrer"><img class="button-icon" src="{{ url_for('static', filename='icons/link-round.svg') }}" alt="">获取 Chat ID</a>
+              </div>
+              <label>Bot Token<input id="telegram-token" type="password" autocomplete="new-password" placeholder="留空则保持当前 Token"></label>
+              <div class="settings-grid">
+                <label>Chat ID<input id="telegram-chat-id" autocomplete="off" placeholder="例如 123456789"></label>
+                <label>请求超时 (秒)<input id="telegram-timeout" type="number" min="1" max="60" value="10"></label>
+              </div>
+              <p id="telegram-error" class="form-error" role="alert"></p>
+              <div class="settings-actions"><button id="test-telegram" class="button secondary" type="button"><img class="button-icon" src="{{ url_for('static', filename='icons/test-tube.svg') }}" alt="">发送测试通知</button><button id="save-telegram" class="button" type="submit"><img class="button-icon" src="{{ url_for('static', filename='icons/diskette.svg') }}" alt="">保存配置</button></div>
+            </form>
+          </section>
+        </div>
+
+        <div class="view" data-view-panel="events">
+          <section class="panel">
+            <div class="panel-head"><div><h2>事件记录</h2><p>Webhook 请求、分配结果与配置变更</p></div></div>
+            <ol id="events-list" class="events"><li class="empty">暂无事件</li></ol>
+          </section>
+        </div>
+
+        <div class="view" data-view-panel="logs">
+          <section class="panel log-panel">
+            <div class="panel-head"><div><h2>实时日志</h2><p id="log-status">正在连接日志流...</p></div><button id="refresh-logs" class="button secondary" type="button"><img class="button-icon" src="{{ url_for('static', filename='icons/refresh.svg') }}" alt="">刷新</button></div>
+            <div class="log-toolbar">
+              <label>最低级别<select id="log-level"><option value="DEBUG">DEBUG</option><option value="INFO" selected>INFO</option><option value="WARNING">WARNING</option><option value="ERROR">ERROR</option></select></label>
+              <label>时间顺序<select id="log-order"><option value="asc">旧 → 新</option><option value="desc">新 → 旧</option></select></label>
+              <label class="check-control"><input id="log-follow" type="checkbox" checked>跟随新日志</label>
+              <label class="check-control"><input id="log-indent" type="checkbox" checked>缩进换行</label>
+              <label class="check-control"><input id="log-nowrap" type="checkbox">隐藏换行文本</label>
+            </div>
+            <div id="log-stream" class="log-stream indent-lines" tabindex="0"><p class="empty">暂无日志</p></div>
+          </section>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <dialog id="timezone-dialog">
+    <form id="timezone-form" class="timezone-form">
+      <div><p class="eyebrow">DASHBOARD TIMEZONE</p><h2>选择统计时区</h2></div>
+      <p>“今日”上传和下载量会在所选时区的 00:00 重新开始统计。</p>
+      <label>时区<select id="timezone-select" required></select></label>
+      <p id="timezone-error" class="form-error" role="alert"></p>
+      <div class="settings-actions"><button id="timezone-cancel" class="button secondary" type="button">取消</button><button id="timezone-save" class="button" type="submit">保存时区</button></div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status"></div>
+  <script src="{{ url_for('static', filename='dashboard.js') }}" defer></script>
+</body>
+</html>

@@ -30,6 +30,9 @@ venv/
 .venv/
 pip-log.txt
 .pytest_cache/
+node_modules/
+test-results/
+dashboard-*.png
 
 # IDE相关
 .vscode/
@@ -48,4 +51,4 @@ Thumbs.db
 *.log
 
 # 配置文件（使用模板）
-config.json 
+config.json
